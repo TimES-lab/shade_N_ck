@@ -1,0 +1,2014 @@
+---
+title: "The role of nitrogen and cytokinins in the modulation of the shade avoidance syndrome"
+output: github_document
+author: "Andres Romanowski"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Purpose
+
+
+# Library requirements
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+  BiocManager::install()}
+
+if(!require(edgeR)) BiocManager::install("edgeR")
+if(!require(GenomicFeatures)) BiocManager::install("GenomicFeatures")
+if(!require(ASpli)) BiocManager::install("ASpli")
+
+if(!require(pheatmap)) install.packages("pheatmap")
+
+if(!require(devtools)) {
+  install.packages("devtools")
+  devtools::install_github("kassambara/ggpubr")}
+if(!require(RColorBrewer)) install.packages("RcolorBrewer")
+if(!require(gplots)) install.packages("gplots")
+if(!require(ggrepel)) install.packages("ggrepel")
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(stringr)) install.packages("stringr")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(RColorBrewer)) install.packages("RColorBrewer")
+# Other libraries are loaded in the required section
+```
+
+# Begin analysis
+
+Set base folder and load common useful functions
+
+```{r pressure, echo=FALSE}
+basedir <- "../results"
+setwd(basedir)
+
+# load auxiliary functions
+source("../scripts/common_functions.R")
+
+```
+
+## 0 - Generate ASpli files
+
+```{r}
+genome<-makeTxDbFromGFF("/hpc/uu_bio_pep/aromanowski/BioData/references/Arabidopsis_thaliana/atRTD3/atRTD3_transfix.edited.gtf", format = "gtf") 
+saveDb(genome, file="../data/genomeAtRTD3.sqlite")
+features<-binGenome(genome)
+save(features, file="../data/featuresAtRTD3.RData")
+
+```
+
+```{r}
+# Load the genome
+genome <- loadDb(file="../data/genomeAtRTD3.sqlite")
+load(file="../data/featuresAtRTD3.RData")
+
+```
+
+## 1 - Obtain read counts
+
+Load the shade_N_ck targets and bam files. Then, obtain the counts.
+
+```{r}
+targets <- read.table("../data/targets.txt", stringsAsFactors = FALSE, header = TRUE, row.names = 1)
+```
+
+```{r}
+# Get count data and save it as an .Rdata file
+# l is min read length from the experiment. Here it is set to 35
+# max intron size is conserved in different plant families (Yan et al., 2013 - doi: 10.1007/s11427-013-4540-y)
+setwd(basedir)
+setwd(dir = "../data")
+counts <- gbCounts(features, targets, 35,
+            maxISize = 5000, minAnchor = 10, libType="PE", 
+            strandMode=2, alignFastq = FALSE, dropBAM = FALSE)
+
+save(counts, file="counts_shade_N_ck.Rdata") # Save raw counts data
+
+gc <- counts@gene.counts
+write_tsv(gc, file = "../data/raw_gene_counts.txt")
+
+```
+
+```{r}
+gc <- read_tsv(file = "../data/raw_gene_counts.txt")
+rownames(gc) <- gc$symbol
+```
+
+### Define groups, design matrix and contrasts
+
+Here I combine the tissue, day time point and treatment factor so that I will later compare just between same day treatments within each tissue. I convert them into a single factor See <https://bioconductor.org/packages/devel/workflows/vignettes/RNAseq123/inst/doc/designmatrices.html> for more information on this
+
+```{r}
+lev <- c("Col_HN_WL", 
+         "abcg14_HN_WL",
+         "cypDM_HN_WL",
+         "Col_HN_FR",
+         "abcg14_HN_FR",
+         "cypDM_HN_FR",
+         "Col_LN_WL",
+         "abcg14_LN_WL",
+         "cypDM_LN_WL",
+         "Col_LN_FR",
+         "abcg14_LN_FR",
+         "cypDM_LN_FR"
+)
+
+group <- factor(str_c(targets$genotype, "_", targets$nitrogen, "_", targets$light), levels = lev)
+targets <- cbind(targets, group)
+
+# This allows us to fit a means model to the data, using a design matrix coded as
+design <- model.matrix(~0+group)
+colnames(design) <- levels(group)
+
+# To check for redundancy of model parameters, one can compare between the number of columns in the design matrix with ncol(design)
+# to the rank of the matrix with qr(design)$rank
+ncol(design)
+qr(design)$rank
+
+contrasts <- makeContrasts(
+  shade_Col_HN = (Col_HN_FR - Col_HN_WL),
+  shade_abcg14_HN = (abcg14_HN_FR - abcg14_HN_WL),
+  shade_cypDM_HN = (cypDM_HN_FR - cypDM_HN_WL),
+  
+  shade_Col_LN = (Col_LN_FR - Col_LN_WL),
+  shade_abcg14_LN = (abcg14_LN_FR - abcg14_LN_WL),
+  shade_cypDM_LN = (cypDM_LN_FR - cypDM_LN_WL),
+  
+  nitrogen_Col_WL = (Col_LN_WL - Col_HN_WL),
+  nitrogen_abcg14_WL = (abcg14_LN_WL - abcg14_HN_WL),
+  nitrogen_cypDM_WL = (cypDM_LN_WL - cypDM_HN_WL),
+  
+  nitrogen_Col_FR = (Col_LN_FR - Col_HN_FR),
+  nitrogen_abcg14_FR = (abcg14_LN_FR - abcg14_HN_FR),
+  nitrogen_cypDM_FR = (cypDM_LN_FR - cypDM_HN_FR),
+  
+  shade_nitrogen_Col = (Col_LN_FR - Col_LN_WL) - (Col_HN_FR - Col_HN_WL),
+  shade_nitrogen_abcg14 = (abcg14_LN_FR - abcg14_LN_WL) -  (abcg14_HN_FR - abcg14_HN_WL),
+  shade_nitrogen_cypDM = (cypDM_LN_FR - cypDM_LN_WL) - (cypDM_HN_FR - cypDM_HN_WL),
+  
+  general_shade = (Col_HN_FR + Col_LN_FR + abcg14_HN_FR + abcg14_LN_FR + cypDM_HN_FR + cypDM_LN_FR)/6 -
+					(Col_HN_WL + Col_LN_WL + abcg14_HN_WL + abcg14_LN_FR + cypDM_HN_WL + cypDM_LN_WL)/6,
+  
+  general_nitrogen = (Col_LN_WL + Col_LN_FR + abcg14_LN_WL + abcg14_LN_FR + cypDM_LN_WL + cypDM_LN_FR)/6 - 
+					(Col_HN_WL + Col_HN_FR + abcg14_LN_WL + abcg14_LN_FR + cypDM_LN_WL + cypDM_LN_FR)/6,
+    
+  levels = colnames(design))
+contrasts
+
+```
+
+### Create DGEList element with raw counts
+
+```{r}
+# This object is easy to use as it can be manipulated like an ordinary list in R, and it can also be subsetted like a matrix. The main components of a DGEList object are a matrix of read counts, sample information in the data.frame format and optional gene annotation. We enter the counts into a DGEList object using the function DGEList in edgeR:
+
+df <- as.matrix(gc[,setdiff(colnames(gc), c("symbol", "locus_overlap", "gene_coordinates", "start", "end", "length", "effective_length"))])
+rownames(df) <- gc$symbol
+
+y <- DGEList(counts= df ,
+             group=group)
+colnames(y)=rownames(targets) # Set Column names
+
+y$samples$lib.size = colSums(y$counts) # Recalculate library sizes
+
+```
+
+### Plots of data before count filtering and normalisation
+
+### Raw library sizes
+
+```{r}
+# Raw ibrary sizes plot
+ggplot(data = data.frame(name = factor(colnames(y), levels = colnames(y)), size = effectiveLibSizes(y), group = y$samples$group), aes(x = name, y = size, fill = group)) +
+  geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Sample") + ylab("Library size (read counts)") +
+  labs(title="Raw library sizes")
+  
+ggsave("../results/raw-library_sizes.tiff",
+       device = "tiff",
+       scale = 1,
+       units = "cm",
+       dpi = 600,
+       limitsize = TRUE)
+```
+
+### Histogram of logcounts
+
+```{r}
+logcounts <- cpm(y, log = TRUE)
+```
+
+```{r}
+# Logcounts histogram plot
+hist(logcounts)
+
+png(file=paste0("../results/raw-histogram_logCPM.png"),    # create PNG for the histogram      
+    width = 8*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mar=c(9,4.1,4.1,2.1))
+hist(logcounts)
+dev.off()
+
+# long_logcounts <- as_tibble(cbind(Gene_ID = rownames(logcounts), logcounts)) %>% 
+#   pivot_longer(!Gene_ID, names_to = "sample", values_to = "logcounts")
+```
+
+### Raw boxplot
+
+```{r}
+
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts),col="blue")
+title(paste0("Boxplots of logCPMs (unnormalised)"))
+
+png(filename = paste0("../results/raw-BoxPlot.png"),    # create PNG for the BoxPlot        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)
+par(mar=c(9,4.1,4.1,2.1))
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+# Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(logcounts),col="blue")
+title(paste0("Boxplots of logCPMs (unnormalised)"))
+dev.off()
+```
+
+### Raw MDS plot
+
+```{r}
+
+# Choose different colours for each sample type
+col.cell <- c("violet", "purple", "blue", "cyan", "green", "dark gray","orange", "pink", "magenta", "red", "dark red", "brown")[factor(str_c(targets$genotype, "_", targets$nitrogen, "_", targets$light), levels = lev)]
+data.frame(str_c(targets$genotype, "_", targets$nitrogen, "_", targets$light),col.cell)
+
+plotMDS(y, col=col.cell)
+title("MDS by Sample")
+
+png(filename = paste0("../results/raw-MDS_plot.png"),    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size)
+plotMDS(y, col=col.cell)
+title("MDS by Sample")
+dev.off()
+
+```
+
+## 2- Filter count data
+Genes that have very low counts across all the libraries should be removed prior to downstream analysis. This is justified on both biological and statistical grounds. From biological point of view, a gene must be expressed at some minimal level before it is likely to be translated into a protein or to be considered biologically important. From a statistical point of view, genes with consistently low counts are very unlikely be assessed as significantly DE because low counts do not provide enough statistical evidence for a reliable judgement to be made. Such genes can therefore be removed from the analysis without any loss of information.
+
+```{r}
+# Find out how many rows have 0 expression among all samples
+table(rowSums(y$counts==0)==36) #7,591 not expressed genes
+```
+
+As a rule of thumb, we require that a gene have a count of at least 10 or so in at least some libraries before it is considered to be expressed in the study. In practice, the filtering is actually based on count-per-million (CPM) values so as to avoid favoring genes that are expressed in larger libraries over those expressed in smaller libraries. In edgeR, the filtering can be accomplished using a function that takes into account the library sizes and the experimental design:
+
+```{r}
+
+# See how many genes have a minimum CPM of 10 in all samples within a group (in the case below as we are feeding the design as a parameter we do not need to add the group as a parameter)
+keep <- (filterByExpr(y, design, min.prop = 1))
+table(keep) #24,823 expressed genes
+
+y.filtered <- y[keep, , keep.lib.sizes=FALSE]
+```
+
+### Plots of data after filtering
+
+#### Filtered library sizes
+
+```{r}
+# Raw ibrary sizes plot
+ggplot(data = data.frame(name = factor(colnames(y.filtered), levels = colnames(y.filtered)), size = effectiveLibSizes(y.filtered), group = y.filtered$samples$group), aes(x = name, y = size, fill = group)) +
+  geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Sample") + ylab("Library size (read counts)") +
+  labs(title="Filtered library sizes")
+  
+ggsave("../results/filtered-library_sizes.tiff",
+       device = "tiff",
+       scale = 1,
+       units = "cm",
+       dpi = 600,
+       limitsize = TRUE)
+```
+
+#### Histogram of filtered logcounts
+
+```{r}
+logcounts.filtered <- cpm(y.filtered, log = TRUE)
+```
+
+```{r}
+# Logcounts histogram plot
+
+hist(logcounts.filtered)
+
+png(file=paste0("../results/filtered-histogram_logCPM.png"),    # create PNG for the histogram      
+    width = 8*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mar=c(9,4.1,4.1,2.1))
+hist(logcounts.filtered)
+dev.off()
+
+# long_logcounts <- as_tibble(cbind(Gene_ID = rownames(logcounts), logcounts)) %>% 
+#   pivot_longer(!Gene_ID, names_to = "sample", values_to = "logcounts")
+```
+
+#### Filtered boxplot
+
+```{r}
+
+boxplot(logcounts.filtered, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts.filtered),col="blue")
+title(paste0("Boxplots of logCPMs (unnormalised - filtered)"))
+
+png(filename = paste0("../results/filtered-BoxPlot.png"),    # create PNG for the BoxPlot        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)
+par(mar=c(9,4.1,4.1,2.1))
+boxplot(logcounts.filtered, xlab="", ylab="Log2 counts per million",las=2)
+# Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(logcounts.filtered),col="blue")
+title(paste0("Boxplots of logCPMs (unnormalised - filtered)"))
+dev.off()
+```
+
+#### Filtered MDS plot
+
+```{r}
+
+# Choose different colours for each sample type
+col.cell <- c("violet", "purple", "blue", "cyan", "green", "dark gray","orange", "pink", "magenta", "red", "dark red", "brown")[factor(str_c(targets$genotype, "_", targets$nitrogen, "_", targets$light), levels = lev)]
+data.frame(str_c(targets$genotype, "_", targets$nitrogen, "_", targets$light),col.cell)
+
+plotMDS(y.filtered, col=col.cell)
+title("MDS by Sample (filtered)")
+
+png(filename = paste0("../results/filtered-MDS_plot.png"),    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size)
+plotMDS(y.filtered, col=col.cell)
+title("MDS by Sample (filtered)")
+dev.off()
+
+```
+
+#### Hierarchical clustering with heatmaps
+
+```{r}
+# Load required pacakages for heatmap.2 and colour palette
+if (!require("RColorBrewer")) install.packages("RColorBrewer")
+if (!require("gplots")) install.packages("gplots")
+
+# We estimate the variance for each row in the logcounts matrix
+var_genes <- apply(logcounts.filtered, 1, var)
+head(var_genes)
+# Get the gene names for the top 500 most variable genes
+select_var <- names(sort(var_genes, decreasing=TRUE))[1:500]
+head(select_var)
+# Subset logcounts matrix
+highly_variable_lcpm <- logcounts.filtered[select_var,]
+dim(highly_variable_lcpm)
+head(highly_variable_lcpm)
+
+## Get some nice colours for the variable genes heatmap
+mypalette <- brewer.pal(7,"Spectral")
+morecols <- colorRampPalette(mypalette)
+
+# Plot the heatmap
+# par(mar=c(9,4.1,4.1,2.1))
+heatmap.2(highly_variable_lcpm, 
+          col=rev(morecols(50)),
+          trace="column", 
+          main="Variability of genes across samples",
+          ColSideColors=col.cell,scale="row",
+          cexRow=1,
+          cexCol=1,
+          margins=c(7,6),
+          srtCol=45,
+          labRow=FALSE)
+
+# Save the heatmap
+png(file="../results/filtered-top500_var_genes-heatmap.png",    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mar=c(9,4.1,4.1,2.1))
+heatmap.2(highly_variable_lcpm, 
+          col=rev(morecols(50)),
+          trace="column", 
+          main="Variability of genes across samples",
+          ColSideColors=col.cell,scale="row",
+          cexRow=1,
+          cexCol=1,
+          margins=c(7,6),
+          srtCol=45,
+          labRow=FALSE)
+dev.off()
+
+```
+
+## 3 - Normalise reads
+
+Normalization by trimmed mean of M values (TMM) (Robinson and Oshlack 2010) is performed by using the calcNormFactors function, which returns the DGEList argument with only the norm.factors changed. It calculates a set of normalization factors, one for each sample, to eliminate composition biases between libraries. The product of these factors and the library sizes defines the effective library size, which replaces the original library size in all downstream analyses.
+
+```{r}
+# Calculate normalization factors by library
+
+y.filtered.norm<-calcNormFactors(y.filtered, method = "TMM")
+```
+
+### Check before and after TMM normalization effect
+
+```{r}
+# The expression profiles of individual samples can be explored more closely with mean-difference (MD) plots. An MD plot visualizes the library
+# size-adjusted log-fold change between two libraries (the difference) against the average log-expression across those libraries (the mean).
+par(mfrow=c(2,2)) # plot 2 by 2 graphs in the same layout
+plotMD(logcounts.filtered,column = 7) # before normalization
+abline(h=0,col="blue")
+plotMD(logcounts.filtered,column = 8) # before normalization
+abline(h=0,col="blue")
+plotMD(y.filtered.norm,column = 7) # after TMM normalization
+abline(h=0,col="red")
+plotMD(y.filtered.norm,column = 8) # after TMM normalization
+abline(h=0,col="red")
+```
+
+### Normalization graphs (one per sample side by side)
+
+```{r}
+pdf("../results/samples_before_and_after_TMM_normalization.pdf",
+    paper = "a4r")
+for (i in seq(from = 0, to = length(rownames(targets)), by= 6)) {
+  par(mfrow=c(2,3), mar=c(9,4.1,4.1,2.1))
+  
+  print(i)
+  for (j in seq(c(0:5))) {
+    if ((i+j) <= length(rownames(targets))) {  
+      print(paste0("j =", j, " and i=", i+j))
+      plotMD(y.filtered,column = i+j) # before normalization
+      abline(h=0,col="blue")
+      plotMD(y.filtered.norm,column = i+j) # after TMM normalization
+      abline(h=0,col="red")
+    }
+  }
+  if (i > length(rownames(targets))) { i = length(rownames(targets))}
+  
+}
+dev.off()
+```
+
+### Obtain normalised CPMs and logcounts
+
+```{r}
+# get normalised logCPMs
+logcounts.filtered.norm <- cpm(y.filtered.norm, normalized.lib.sizes = TRUE, log = TRUE)
+
+logcounts.filtered.norm.df <- as_tibble(logcounts.filtered.norm, rownames = "Gene_ID")
+```
+
+### Plots of data after normalising
+
+#### Normalised counts library sizes
+
+```{r}
+# Normalised counts library sizes plot
+ggplot(data = data.frame(name = factor(colnames(y.filtered.norm), levels = colnames(y.filtered.norm)), size = effectiveLibSizes(y.filtered.norm), group = y.filtered.norm$samples$group), aes(x = name, y = size, fill = group)) +
+  geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Sample") + ylab("Library size (read counts)") +
+  labs(title="Normalised counts library sizes")
+  
+ggsave("../results/norm-library_sizes.tiff",
+       device = "tiff",
+       scale = 1,
+       units = "cm",
+       dpi = 600,
+       limitsize = TRUE)
+```
+
+#### Histogram of filtered normalised logcounts
+
+```{r}
+# Logcounts histogram plot
+hist(logcounts.filtered.norm)
+
+png(file=paste0("../results/norm-histogram_logCPM.png"),    # create PNG for the histogram      
+    width = 8*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mar=c(9,4.1,4.1,2.1))
+hist(logcounts.filtered.norm)
+dev.off()
+
+# long_logcounts <- as_tibble(cbind(Gene_ID = rownames(logcounts), logcounts)) %>% 
+#   pivot_longer(!Gene_ID, names_to = "sample", values_to = "logcounts")
+```
+
+#### Normalised boxplot
+
+```{r}
+
+boxplot(logcounts.filtered.norm, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts.filtered.norm),col="blue")
+title(paste0("Boxplots of logCPMs (normalised)"))
+
+png(filename = paste0("../results/norm-BoxPlot.png"),    # create PNG for the BoxPlot        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)
+par(mar=c(9,4.1,4.1,2.1))
+boxplot(logcounts.filtered.norm, xlab="", ylab="Log2 counts per million",las=2)
+# Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(logcounts.filtered.norm),col="blue")
+title(paste0("Boxplots of logCPMs (normalised)"))
+dev.off()
+```
+
+#### Filtered MDS plot
+
+```{r}
+
+# Choose different colours for each sample type
+col.cell <- c("violet", "purple", "blue", "cyan", "green", "dark gray","orange", "pink", "magenta", "red", "dark red", "brown")[factor(str_c(targets$genotype, "_", targets$nitrogen, "_", targets$light), levels = lev)]
+data.frame(str_c(targets$genotype, "_", targets$nitrogen, "_", targets$light),col.cell)
+
+plotMDS(y.filtered.norm, col=col.cell)
+title("MDS by Sample (normalised)")
+
+png(filename = paste0("../results/norm-MDS_plot.png"),    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size)
+plotMDS(y.filtered.norm, col=col.cell)
+title("MDS by Sample (normalised)")
+dev.off()
+
+```
+
+#### Hierarchical clustering of filtered counts with heatmaps
+
+```{r}
+# We estimate the variance for each row in the logcounts matrix
+var_genes <- apply(logcounts.filtered.norm, 1, var)
+head(var_genes)
+# Get the gene names for the top 500 most variable genes
+select_var <- names(sort(var_genes, decreasing=TRUE))[1:500]
+head(select_var)
+# Subset logcounts matrix
+highly_variable_lcpm <- logcounts.filtered.norm[select_var,]
+dim(highly_variable_lcpm)
+head(highly_variable_lcpm)
+
+## Get some nice colours for the variable genes heatmap
+mypalette <- brewer.pal(7,"Spectral")
+morecols <- colorRampPalette(mypalette)
+
+# Plot the heatmap
+par(mar=c(9,4.1,4.1,2.1))
+heatmap.2(highly_variable_lcpm, 
+          col=rev(morecols(50)),
+          trace="column", 
+          main="Variability of genes across samples",
+          ColSideColors=col.cell,scale="row",
+          cexRow=1,
+          cexCol=1,
+          margins=c(7,6),
+          srtCol=45,
+          labRow=FALSE)
+
+# Save the heatmap
+png(file="../results/norm-top500_var_genes-heatmap.png",    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mar=c(9,4.1,4.1,2.1))
+heatmap.2(highly_variable_lcpm, 
+          col=rev(morecols(50)),
+          trace="column", 
+          main="Variability of genes across normalised samples",
+          ColSideColors=col.cell,scale="row",
+          cexRow=1,
+          cexCol=1,
+          margins=c(7,6),
+          srtCol=45,
+          labRow=FALSE)
+dev.off()
+
+```
+
+## 4 - Hierarchical clustering (filtered, normalised reads)
+
+### Hierarchical clustering
+
+```{r}
+#hierarchical clustering can only work on a data matrix, not a data frame
+distance <- dist(t(logcounts.filtered.norm), method = "euclidean") #other distance methods are "euclidean", maximum", "manhattan", "canberra", "binary" or "minkowski"
+
+clusters <- hclust(distance, method = "complete") #other agglomeration methods are "ward.D", "ward.D2", "single", "complete", "average", "mcquitty", "median", or "centroid"
+
+par(mfrow=c(1,1))
+plot(clusters, labels=rownames(targets))
+
+png(filename = paste0("../results/norm-clustering.png"),    # create PNG for the clustering        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size)
+plot(clusters, labels=rownames(y.filtered.norm$samples))
+dev.off()
+```
+
+### Correlation pheatmap
+
+```{r}
+# load required packages
+if ((!require("pheatmap"))) install.packages("pheatmap")
+
+# use pearson for CPMs hich looks for linearly dependent variables
+# use spearman for log CPMs, as When you log transform them, you change the relationships between genes, ceasing to be linea.
+
+rld_cor <- cor(logcounts.filtered.norm, method = "spearman")
+rld_cor2 <- cor(cpm(y.filtered.norm, log = FALSE), method = "pearson") 
+
+heat.colors <- brewer.pal(9, "Blues")
+
+ph1 <- pheatmap(rld_cor, color = heat.colors, border_color=NA, fontsize = 8, 
+         fontsize_row = 8, height=20)
+ph2 <- pheatmap(rld_cor2, color = heat.colors, border_color=NA, fontsize = 8, 
+         fontsize_row = 8, height=20)
+
+png(filename = paste0("../results/norm-logcounts-corr-heatmap.png"),    # create PNG for the clustering        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size)
+ph1
+dev.off()
+```
+
+## 5 - PCA analysis (filtered, normalised reads)
+
+### Calculate the percentage of variance explained by each PC
+
+```{r}
+# Principal component analysis (PCA) -------------
+pca.res <- prcomp(t(logcounts.filtered.norm), scale.=F, retx=T)
+#look at the PCA result (pca.res) that you just created
+ls(pca.res)
+summary(pca.res) # Prints variance summary for all principal components.
+pca.res$rotation #$rotation shows you how much each gene influenced each PC (called 'scores')
+pca.res$x # 'x' shows you how much each sample influenced each PC (called 'loadings')
+#note that these have a magnitude and a direction (this is the basis for making a PCA plot)
+stats::screeplot(pca.res) # A screeplot is a standard way to view eigenvalues for each PCA
+pc.var<-pca.res$sdev^2 # sdev^2 captures these eigenvalues from the PCA result
+pc.per<-round(pc.var/sum(pc.var)*100, 1) # we can then use these eigenvalues to calculate the percentage variance explained by each PC
+
+plot(pc.per)
+title("Percentage variance explained by each PC")
+
+png(filename = paste0("../results/norm-PCA_percentage_of_variance_by_PC.png"),    # create PNG for the clustering        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size)
+plot(pc.per)
+title("Percentage variance explained by each PC")
+dev.off()
+```
+
+### Visualize your PCA result
+
+```{r}
+if ((!require("ggrepel"))) install.packages("ggerepel")
+
+#lets first plot any two PCs against each other
+#We know how much each sample contributes to each PC (loadings), so let's plot
+pca.res.df <- as_tibble(pca.res$x)
+
+sampleLabels <- rownames(y.filtered.norm$samples)
+
+pca.plot <- ggplot(pca.res.df) +
+  aes(x=PC1, y=PC2, label=c(rep("",length(sampleLabels))), color = group) +
+  geom_point(size = 4) +
+  geom_text_repel(size = 4) +
+  #stat_ellipse() +
+  xlab(paste0("PC1 (",pc.per[1],"%",")")) + 
+  ylab(paste0("PC2 (",pc.per[2],"%",")")) +
+  labs(title="PCA plot",
+       caption=paste0("produced on ", Sys.time())) +
+  coord_fixed() +
+  guides(color=guide_legend(title="group")) +
+  theme_bw()
+
+pca.plot
+
+png(filename = paste0("../results/norm-PCA-by_", "group", ".png"),    # create PNG for the PCA    
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size)
+print(pca.plot)
+dev.off()
+```
+
+### Visualize the PCA plot by each co-variate in the targets file
+
+```{r}
+# plot PCA plots for PC1 vs PC2 by co-variate
+for (i in seq_along(colnames(targets)[2:4])){
+   pca.plot <- ggplot(pca.res.df) +
+   aes(x=PC1, y=PC2, label=sampleLabels, color = targets[,i+1]) +
+   geom_point(size = 4) +
+   geom_text_repel(size = 4) +
+   # stat_ellipse() +
+   xlab(paste0("PC1 (",pc.per[1],"%",")")) + 
+   ylab(paste0("PC2 (",pc.per[2],"%",")")) +
+   labs(title="PCA plot",
+        caption=paste0("produced on ", Sys.time())) +
+   coord_fixed() +
+     guides(color=guide_legend(title=colnames(targets)[i+1])) +
+   theme_bw()
+
+ png(filename = paste0("../results/norm-PCA-by_", colnames(targets)[i+1], ".png"),    # create PNG for the PCA    
+     width = 10*600,        # 10 x 600 pixels
+     height = 5*600,
+     res = 600,            # 300 pixels per inch
+     pointsize = 8)        # smaller font size)
+  print(pca.plot)
+  dev.off()
+}
+```
+
+```{r}
+# Add a tissue-day PCA plot
+ pca.plot <- ggplot(pca.res.df) +
+   aes(x=PC1, y=PC2, label=sampleLabels, color = paste0(targets$tissue, "_", targets$day)) +
+   geom_point(size = 4) +
+   geom_text_repel(size = 4) +
+   stat_ellipse() +
+   xlab(paste0("PC1 (",pc.per[1],"%",")")) + 
+   ylab(paste0("PC2 (",pc.per[2],"%",")")) +
+   labs(title="PCA plot",
+        caption=paste0("produced on ", Sys.time())) +
+   coord_fixed() +
+     guides(color=guide_legend(title=colnames(targets)[i+1])) +
+   theme_bw()
+ 
+ png(filename = paste0("../results/norm-PCA-by_tissue-day.png"),    # create PNG for the PCA    
+     width = 20*600,        # 10 x 600 pixels
+     height = 17*600,
+     res = 600,            # 300 pixels per inch
+     pointsize = 8)        # smaller font size)
+  print(pca.plot)
+  dev.off()
+ 
+```
+
+### Create a PCA 'small multiples' chart
+
+```{r}
+pca.res.df <- pca.res$x[,1:20] %>% # note that this is the first time you've seen the 'pipe' operator from the magrittr package
+  as_tibble() %>%
+  add_column(sample = sampleLabels,
+             group = group,
+             genotype = targets$genotype,
+             nitrogen = targets$nitrogen,
+             light = targets$light,
+             genotype_nitrogen = paste0(targets$genotype,"_",targets$nitrogen),
+             genotype_light = paste0(targets$genotype,"_",targets$light),
+             nitrogen_light = paste0(targets$nitrogen,"_",targets$light)
+  )
+
+pca.pivot <- pivot_longer(pca.res.df, # dataframe to be pivoted
+                          cols = PC1:PC20, # column names to be stored as a SINGLE variable
+                          names_to = "PC", # name of that new variable (column)
+                          values_to = "loadings") # name of new variable (column) storing all the values (data)
+
+pca.pivot$PC <- factor(pca.pivot$PC, 
+                       levels = c("PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10",
+                                  "PC11", "PC12", "PC13", "PC14", "PC15", "PC16", "PC17", "PC18", "PC19", "P20"))
+# by group
+small.mult.pca <- ggplot(pca.pivot) +
+  aes(x=sample, y=loadings, fill = group) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~PC) +
+  labs(title="PCA 'small multiples' plot",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw() +
+  coord_flip()
+png(filename = paste0("../results/norm-PCA_small_multiples-by_group.png"),    # create PNG for the PCA 
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 4)        # smaller font size)
+print(small.mult.pca)
+dev.off()
+
+# by genotype
+small.mult.pca <- ggplot(pca.pivot) +
+  aes(x=sample, y=loadings, fill = genotype) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~PC) +
+  labs(title="PCA 'small multiples' plot",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw() +
+  coord_flip()
+png(filename = paste0("../results/norm-PCA_small_multiples-by_genotype.png"),    # create PNG for the PCA 
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 4)        # smaller font size)
+print(small.mult.pca)
+dev.off()
+
+# by nitrogen
+small.mult.pca <- ggplot(pca.pivot) +
+  aes(x=sample, y=loadings, fill = nitrogen) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~PC) +
+  labs(title="PCA 'small multiples' plot",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw() +
+  coord_flip()
+png(filename = paste0("../results/norm-PCA_small_multiples-by_nitrogen.png"),    # create PNG for the PCA 
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 4)        # smaller font size)
+print(small.mult.pca)
+dev.off()
+
+# by light
+small.mult.pca <- ggplot(pca.pivot) +
+  aes(x=sample, y=loadings, fill = light) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~PC) +
+  labs(title="PCA 'small multiples' plot",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw() +
+  coord_flip()
+png(filename = paste0("../results/norm-PCA_small_multiples-by_light.png"),    # create PNG for the PCA 
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 4)        # smaller font size)
+print(small.mult.pca)
+dev.off()
+
+# by genotype-nitrogen
+small.mult.pca <- ggplot(pca.pivot) +
+  aes(x=sample, y=loadings, fill = genotype_nitrogen) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~PC) +
+  labs(title="PCA 'small multiples' plot",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw() +
+  coord_flip()
+png(filename = paste0("../results/norm-PCA_small_multiples-by_genotype-nitrogen.png"),    # create PNG for the PCA 
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 4)        # smaller font size)
+print(small.mult.pca)
+dev.off()
+
+# by genotype-light
+small.mult.pca <- ggplot(pca.pivot) +
+  aes(x=sample, y=loadings, fill = genotype_light) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~PC) +
+  labs(title="PCA 'small multiples' plot",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw() +
+  coord_flip()
+png(filename = paste0("../results/norm-PCA_small_multiples-by_genotype-light.png"),    # create PNG for the PCA 
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 4)        # smaller font size)
+print(small.mult.pca)
+dev.off()
+
+# by nitrogen-light
+small.mult.pca <- ggplot(pca.pivot) +
+  aes(x=sample, y=loadings, fill = nitrogen_light) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~PC) +
+  labs(title="PCA 'small multiples' plot",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw() +
+  coord_flip()
+png(filename = paste0("../results/norm-PCA_small_multiples-by_nitrogen-light.png"),    # create PNG for the PCA 
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 4)        # smaller font size)
+print(small.mult.pca)
+dev.off()
+
+```
+
+## 6 - Fit GLM (filtered, normalised reads)
+
+### Estimate dispersions
+
+EdgeR estimates an empirical Bayes moderated dispersion for each individual gene. It also estimates a common dispersion, which is a global dispersion estimate averaged over all genes, and a trended dispersion where the dispersion of a gene is predicted from its abundance.
+
+```{r}
+save(y.filtered.norm, file = "../results/y.filtered.norm.RData")
+```
+
+```{r}
+y.disp <- estimateDisp(y.filtered.norm, design = design, robust = TRUE) #24886
+save(y.disp, file = "../results/y.disp.RData")
+```
+
+This returns a DGEList object with additional components (common.dispersion, trended.dispersion and tagwise.dispersion) added to hold the estimated dispersions. Here robust=TRUE has been used to protect the empirical Bayes estimates against the possibility of outlier genes with exceptionally large or small individual dispersions (Phipson et al. 2016).
+
+### Plot the dispersions:
+
+```{r}
+# The vertical axis of the plotBCV plot shows square-root dispersion, also known as biological coefficient of variation (BCV) 
+# (McCarthy, Chen, and Smyth 2012). For RNA-seq studies, the NB dispersions tend to be higher for genes with very low counts. 
+# The dispersion trend tends to decrease smoothly with abundance and to asymptotic to a constant value for genes with larger counts.
+par(mfrow=c(1,1)) # Plot only one graph
+plotBCV(y.disp) # Plot the dispersion of the data
+
+# Save the dispersion plot
+png(file="../results/shade_n_ck_data_dispersions.png",    # create PNG for the MDS        
+    width = 9*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotBCV(y.disp) # Plot the dispersion of the data
+dev.off()
+```
+
+### Calculate fitted.values counts (pseudo counts) and perform ANOVA like function (Quasi Likelihood F-test)
+
+The NB model can be extended with quasi-likelihood (QL) methods to account for gene-specific variability from both biological and technical sources (Lund et al. 2012; Lun, Chen, and Smyth 2016). Under the QL framework, the NB dispersion trend is used to describe the overall biological variability across all genes, and gene-specific variability above and below the overall level is picked up by the QL dispersion. In the QL approach, the individual (tagwise) NB dispersions are not used.
+
+The estimation of QL dispersions is performed using the glmQLFit function.
+
+Setting robust=TRUE in glmQLFit is usually recommended (Phipson et al. 2016). This allows gene-specific prior df estimates, with lower values for outlier genes and higher values for the main body of genes. This reduces the chance of getting false positives from genes with extremely high or low raw dispersions, while at the same time increasing statistical power to detect differential expression for the main body of genes.
+
+```{r}
+fit <- glmQLFit(y.disp, design = design, robust = TRUE)
+save(fit, file = "../results/fit.RData")
+
+```
+
+This returns a DGEGLM object with the estimated values of the GLM coefficients for each gene. It also contains a number of empirical Bayes (EB) statistics including the QL dispersion trend, the squeezed QL dispersion estimates and the prior degrees of freedom (df). The QL dispersions can be visualized by plotQLDisp function.
+
+```{r}
+plotQLDisp(fit)
+
+# Save the QL dispersion plot
+png(file="../results/QL_dispersions.png",    # create PNG for the MDS        
+    width = 9*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotQLDisp(fit) # Plot the QL dispersion of the data
+dev.off()
+
+```
+
+### Perform QL F-test
+
+We use QL F-tests instead of the more usual likelihood ratio tests (LRT) as they give stricter error rate control by accounting for the uncertainty in dispersion estimation
+
+```{r}
+# qlf <- glmQLFTest(fit, contrast = contrasts)
+qlf <- glmQLFTest(fit)
+
+fdr<-p.adjust(qlf$table$PValue, method="BH") # Calculate FDR
+tt<-cbind(qlf$table, fdr) 
+final<-list(qlf, tt)
+names(final)=c("qlf", "full")
+
+# Genes that pass the expression filter and likelihood test
+dim(final$qlf)
+genes_qlf <- dim(final$qlf)[1] #24,866
+
+# Calculate normalized logCPM data
+logcounts2 <- cpm(y.disp, normalized.lib.sizes = TRUE, log=TRUE)
+
+# Calculate normalized counts (cpm)
+norm_counts <- cpm(y.disp, normalized.lib.sizes = TRUE) 
+```
+
+### Plot some example shade responder genes
+
+```{r}
+
+par(mfrow=c(2,2))
+barplot(norm_counts["AT4G16780", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("ATHB2 - AT4G16780")
+barplot(norm_counts["AT2G46970", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("PIL1 - AT2G46970")
+barplot(norm_counts["AT1G02340", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("HFR1 - AT1G02340")
+barplot(norm_counts["AT1G70560", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("TAA1 - AT1G70560")
+
+# Plot example shade response genes
+png(file="../results/gene_controls_shade_responders.png",    # create PNG for the MDS        
+    width = 9*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mfrow=c(2,2))
+barplot(norm_counts["AT4G16780", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("ATHB2 - AT4G16780")
+barplot(norm_counts["AT2G46970", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("PIL1 - AT2G46970")
+barplot(norm_counts["AT1G02340", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("HFR1 - AT1G02340")
+barplot(norm_counts["AT1G70560", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("TAA1 - AT1G70560")
+dev.off()
+
+# Plot 2 mutated genes crf6 and ckx 5
+png(file="../results/gene_controls_ck_related.png",    # create PNG for the MDS        
+    width = 9*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mfrow=c(2,2))
+barplot(norm_counts["AT1G31770", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("ABCG14 - AT1G31770")
+
+barplot(norm_counts["AT1G67110", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("CYP735A2 - AT1G67110")
+
+barplot(norm_counts["AT3G61630", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("CRF6 - AT3G61630")
+
+barplot(norm_counts["AT1G75450", ], las = 2, ylab = "Normalised counts (CPM)") # Example value
+title("CKX5 - AT1G75450")
+
+dev.off()
+
+
+barplot(norm_counts["AT5G64800", ], las = 2,ylab = "Normalised counts (CPM)")
+title("CLE21 - AT5G64800")
+
+```
+
+### Hierarchical clustering with heatmaps
+```{r}
+# We estimate the variance for each row in the logcounts matrix (normalized values)
+var_genes <- apply(logcounts2, 1, var)
+head(var_genes)
+# Get the gene names for the top 500 most variable genes
+select_var <- names(sort(var_genes, decreasing=TRUE))[1:500]
+head(select_var)
+# Subset logcounts2 matrix
+highly_variable_lcpm <- logcounts2[select_var,]
+dim(highly_variable_lcpm)
+head(highly_variable_lcpm)
+
+# Plot the heatmap
+library(gplots)
+par(mar=c(9,4.1,4.1,2.1))
+heatmap.2(highly_variable_lcpm, 
+          col=rev(morecols(50)),
+          trace="column", 
+          main="Variability of genes across samples (normalized data)",
+          ColSideColors=col.cell,scale="row",
+          cexRow=1,
+          cexCol=1,
+          margins=c(7,6),
+          srtCol=45,
+          labRow=FALSE)
+
+# Save the heatmap
+png(file="norm-top500_var_genes-heatmap.png",    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+par(mar=c(9,4.1,4.1,2.1))
+heatmap.2(highly_variable_lcpm, 
+          col=rev(morecols(50)),
+          trace="column", 
+          main="Variability of genes across samples (normalized data)",
+          ColSideColors=col.cell,scale="row",
+          cexRow=1,
+          cexCol=1,
+          margins=c(7,6),
+          srtCol=45,
+          labRow=FALSE)
+dev.off()
+```
+
+### Save all count data
+```{r}
+# Save all count data
+write.table(qlf$fitted.values, file="../results/shade_n_ck.genes.fitted.values.tab", sep="\t", row.names = TRUE, col.names = NA, na = "NA")
+write.table(gc, file="../results/shade_n_ck.genes.raw.values.tab", sep="\t", row.names = TRUE, col.names = NA, na = "NA")
+write.table(gc[keep,], file="../results/shade_n_ck.genes.filtered.values.tab", sep="\t", row.names = TRUE, col.names = TRUE, na = "NA")
+write.table(logcounts.filtered, file="../results/shade_n_ck.genes.logCPM.unnormalised.values.tab", sep="\t", row.names = TRUE, col.names = NA, na = "NA")
+write.table(logcounts2, file="../results/shade_n_ck.genes.logCPM.normalised.values.tab", sep="\t", row.names = TRUE, col.names = NA, na = "NA")
+write.table(norm_counts, file="../results/shade_n_ck.genes.CPM.normalised.values.tab", sep="\t", row.names = TRUE, col.names = NA, na = "NA")
+```
+
+### Read annotation
+```{r}
+if ((!require("readr"))) install.packages("readr")
+if ((!require("dplyr"))) install.packages("dplyr")
+
+# Read annotation
+recent <- read_tsv(file = "../data/Araport11_functional_descriptions_20210930.txt")
+
+# Remove ".X" from representative gene ID to obtain regular Gene ID and remove duplicates
+recent$name <- gsub("\\..*","",recent$name)
+recent <- recent[which(!duplicated(recent$name)),]
+
+# Remove unnecessary columns and add proper column names
+recent <- recent[,setdiff(colnames(recent), c("gene_model_type"))]
+colnames(recent)[1] <- "Gene_ID"
+colnames(recent)[2] <- "Short_description_03.09.2021"
+
+# Read gene symbols data and modify column names
+gene.symbols <- read_tsv(file = "../data/gene_aliases_20210930.txt")
+colnames(gene.symbols)[1] <- "Gene_ID"
+gene.symbols <- gene.symbols[which(!duplicated(gene.symbols$Gene_ID)),]
+
+# Merge contents by Gene ID
+md <- right_join(x = gene.symbols, y = recent, by = "Gene_ID")
+
+# Clean up NULL and NA values
+md$symbol[which(md$symbol == "NULL")] <- md$Gene_ID[which(md$symbol == "NULL")]
+md$symbol[which(is.na(md$symbol))] <- md$Gene_ID[which(is.na(md$symbol))]
+
+md$full_name[which(md$full_name == "NULL")] <- "-"
+md$full_name[which(is.na(md$full_name))] <- "-"
+
+md$Short_description_03.09.2021[which(md$Short_description_03.09.2021 == "NULL")] <- "-"
+md$Short_description_03.09.2021[which(is.na(md$Short_description_03.09.2021))] <- "-"
+
+md$Curator_summary[which(md$Curator_summary == "NULL")] <- "-"
+md$Curator_summary[which(is.na(md$Curator_summary))] <- "-"
+
+md$Computational_description[which(md$Computational_description == "NULL")] <- "-"
+md$Computational_description[which(is.na(md$Computational_description))] <- "-"
+
+# Get most recent TF data
+
+## Agris AtTFDB downloaded on 06-12-2022
+agrisAtTFDB <- read_tsv("../data/TFs-AGRIS_AtTFDB_2022-12-06-families_data.txt",)
+agrisAtTFDB <- data.frame("Gene_ID" = toupper(agrisAtTFDB$Gene_ID),
+                          "Agris_AtTFDB" = agrisAtTFDB$Family)
+## PlantTFDB v5.0
+PlantTFDB <- read_tsv("../data/TFs-PlantTFDBv5.0_2022-12-06-Ath_TF_list.txt")
+PlantTFDB <- data.frame("Gene_ID" = toupper(PlantTFDB$Gene_ID),
+                          "PlantTFDB_v5" = PlantTFDB$Family)
+## Ensembl Genomes v55 (October 2022)
+ensemblsTFs <- read_tsv("../data/TFs-Ensembl_v55_2022-10_GO0003700_mart_export.txt")
+ensemblsTFs <- data.frame("Gene_ID" = toupper(ensemblsTFs$`Gene stable ID`),
+                          "ensembl_GO0003700" = ensemblsTFs$`Gene description`)
+
+# Add to current annotation
+md <- merge(md, agrisAtTFDB, "Gene_ID", all = TRUE)
+md <- merge(md, PlantTFDB, "Gene_ID", all = TRUE)
+md <- merge(md, ensemblsTFs, "Gene_ID", all = TRUE)
+md[is.na(md)] <- "-"
+
+write_tsv(md, file = "../data/full_metadata_20221205.tab")
+```
+
+#### Add annotation data to normalised counts and logCPM data
+```{r}
+# Add annotation data to normalised counts and logCPM data
+logcounts2.annot <- getAnnnot(logcounts2, md)
+norm_counts.annot <- getAnnnot(norm_counts, md)
+write_delim(logcounts2.annot, file="../results/annot.shade_n_ck.genes.logCPM.normalised.values.tab", delim = "\t", na = "NA")
+write_delim(norm_counts.annot, file="../results/annot.shade_n_ck.genes.CPM.normalised.values.tab", delim = "\t", na = "NA")
+```
+
+## 07 - Sample comparisons
+*Remember to uncomment metadata merge
+
+```{r}
+dir.create("../results/DE")
+
+# load GLM fit object
+#load("../fit.RData")
+
+# Set cut-off values
+p.value <- 0.05
+fdr <- 0.05
+
+```
+
+
+### 00 - Test for DE genes of Col-0 HN low R-FR vs HN high R-FR
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_Col_HN = (Col_HN_FR - Col_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #4,525
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/00-smear_Col-0_HN_FR_vs_HN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("Col-0 HN low R-FR vs HN high R-FR")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/00-Col-0_HN_FR_vs_HN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/00-Col-0_HN_FR_vs_HN_WL-DE_full.tab")
+```
+
+### 01 Test for DE genes of abcg14 HN low R-FR vs HN high R-FR
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_abcg14_HN = (abcg14_HN_FR - abcg14_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #4,713
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/01-smear_abcg14_HN_FR_vs_HN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("abcg14 HN low R-FR vs HN high R-FR")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/01-abcg14_HN_FR_vs_HN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/01-abcg14_HN_FR_vs_HN_WL-DE_full.tab")
+```
+
+### 02 Test for DE genes of cypDM HN low R-FR vs HN high R-FR
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_cypDM_HN = (cypDM_HN_FR - cypDM_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #4,421
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/02-smear_cypDM_HN_FR_vs_HN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("cypDM HN low R-FR vs HN high R-FR")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/02-cypDM_HN_FR_vs_HN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/02-cypDM_HN_FR_vs_HN_WL-DE_full.tab")
+```
+
+### 03 Test for DE genes of Col-0 LN low R-FR vs LN high R-FR
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_Col_LN = (Col_LN_FR - Col_LN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #3,747
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/03-smear_Col_LN_FR_vs_LN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("Col-0 LN low R-FR vs LN high R-FR")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/03-Col-0_LN_FR_vs_LN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/03-Col-0_LN_FR_vs_LN_WL-DE_full.tab")
+```
+
+### 04 Test for DE genes of abcg14 LN low R-FR vs LN high R-FR
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_abcg14_LN = (abcg14_LN_FR - abcg14_LN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #4,038
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/04-smear_abcg14_LN_FR_vs_LN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("abcg14 LN low R-FR vs LN high R-FR")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/04-abcg14_LN_FR_vs_LN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/04-abcg14_LN_FR_vs_LN_WL-DE_full.tab")
+```
+
+### 05 Test for DE genes of cypDM LN low R-FR vs LN high R-FR
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_cypDM_LN = (cypDM_LN_FR - cypDM_LN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #3,747
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/05-smear_cypDM_LN_FR_vs_LN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("cypDM LN low R-FR vs LN high R-FR")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/05-cypDM_LN_FR_vs_LN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/05-cypDM_LN_FR_vs_LN_WL-DE_full.tab")
+```
+
+### 06 Test for DE genes of Col-0 LN vs HN (in white light)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(nitrogen_Col_WL = (Col_LN_WL - Col_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #7,232
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/06-smear_Col_LN_WL_vs_HN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("Col-0 LN vs HN (in white light)")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/06-Col-0_LN_WL_vs_HN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/06-Col-0_LN_WL_vs_HN_WL-DE_full.tab")
+```
+### 07 Test for DE genes of abcg14 LN vs HN (in white light)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(nitrogen_abcg14_WL = (abcg14_LN_WL - abcg14_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #6,746
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/07-smear_abcg14_LN_WL_vs_HN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("abcg14 LN vs HN (in white light)")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/07-abcg14_LN_WL_vs_HN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/07-abcg14_LN_WL_vs_HN_WL-DE_full.tab")
+```
+
+### 08 Test for DE genes of cypDM LN vs HN (in white light)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(nitrogen_cypDM_WL = (cypDM_LN_WL - cypDM_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #2,203
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/08-smear_cypDM_LN_WL_vs_HN_WL.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("cypDM LN vs HN (in white light)")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/08-cypDM_LN_WL_vs_HN_WL-DE.tab")
+write_tsv(et_merge, file = "../results/DE/08-cypDM_LN_WL_vs_HN_WL-DE_full.tab")
+```
+
+### 09 Test for DE genes of Col-0 LN vs HN (in low R/FR)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(nitrogen_Col_FR = (Col_LN_FR - Col_HN_FR),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #2,855
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/09-smear_Col_LN_FR_vs_HN_FR.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("Col-0 LN vs HN (in low R/FR)")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/09-Col-0_LN_FR_vs_HN_FR-DE.tab")
+write_tsv(et_merge, file = "../results/DE/09-Col-0_LN_FR_vs_HN_FR-DE_full.tab")
+```
+
+### 10 Test for DE genes of abcg14 LN vs HN (in low R/FR)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(nitrogen_abcg14_FR = (abcg14_LN_FR - abcg14_HN_FR),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #6,466
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/10-smear_abcg14_LN_FR_vs_HN_FR.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("abcg14 LN vs HN (in low R/FR)")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/10-abcg14_LN_FR_vs_HN_FR-DE.tab")
+write_tsv(et_merge, file = "../results/DE/10-abcg14_LN_FR_vs_HN_FR-DE_full.tab")
+```
+
+### 11 Test for DE genes of cypDM LN vs HN (in low R/FR)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(nitrogen_cypDM_FR = (cypDM_LN_FR - cypDM_HN_FR),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #3,976
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/11-smear_cypDM_LN_FR_vs_HN_FR.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("cypDM LN vs HN (in low R/FR)")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/11-cypDM_LN_FR_vs_HN_FR-DE.tab")
+write_tsv(et_merge, file = "../results/DE/11-cypDM_LN_FR_vs_HN_FR-DE_full.tab")
+```
+
+### 12 Test for DE genes of Col-0 shade effect in LN vs Col-0 shade effect in HN
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_nitrogen_Col = (Col_LN_FR - Col_LN_WL) - (Col_HN_FR - Col_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #80
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/12-smear_Col_shade_LN_vs_shade_HN.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("Col-0 shade effect in LN vs shade effect in HN")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/12-Col-0_shade_LN_vs_shade_HN-DE.tab")
+write_tsv(et_merge, file = "../results/DE/12-Col-0_shade_LN_vs_shade_HN-DE_full.tab")
+```
+
+### 13 Test for DE genes of abcg14 shade effect in LN vs abcg14 shade effect in HN
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_nitrogen_abcg14 = (abcg14_LN_FR - abcg14_LN_WL) -  (abcg14_HN_FR - abcg14_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #25
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/13-smear_abcg14_shade_LN_vs_shade_HN.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("abcg14 shade effect in LN vs shade effect in HN")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/13-abcg14_shade_LN_vs_shade_HN-DE.tab")
+write_tsv(et_merge, file = "../results/DE/13-abcg14_shade_LN_vs_shade_HN-DE_full.tab")
+```
+
+### 14 Test for DE genes of cypDM shade effect in LN vs cypDM shade effect in HN
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(shade_nitrogen_cypDM = (cypDM_LN_FR - cypDM_LN_WL) - (cypDM_HN_FR - cypDM_HN_WL),levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #0
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/14-smear_cypDM_shade_LN_vs_shade_HN.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("cypDM shade effect in LN vs shade effect in HN")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/14-cypDM_shade_LN_vs_shade_HN-DE.tab")
+write_tsv(et_merge, file = "../results/DE/14-cypDM_shade_LN_vs_shade_HN-DE_full.tab")
+```
+
+### 15 Test for DE genes of general shade response (regardless of N or genotype)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(general_shade = (Col_HN_FR + Col_LN_FR + abcg14_HN_FR + abcg14_LN_FR + cypDM_HN_FR + cypDM_LN_FR)/6 - (Col_HN_WL + Col_LN_WL + abcg14_HN_WL + abcg14_LN_WL + cypDM_HN_WL + cypDM_LN_WL)/6,levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #10,970
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/15-smear_general_shade.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("General shade effect")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/15-general_shade-DE.tab")
+write_tsv(et_merge, file = "../results/DE/15-general_shade-DE_full.tab")
+```
+
+### 16 Test for DE genes of general nitrogen response (regardless of light or genotype)
+```{r}
+et <- glmQLFTest(fit, contrast=makeContrasts(general_nitrogen = (Col_LN_WL + Col_LN_FR + abcg14_LN_WL + abcg14_LN_FR + cypDM_LN_WL + cypDM_LN_FR)/6 - (Col_HN_WL + Col_HN_FR + abcg14_HN_WL + abcg14_HN_FR + cypDM_HN_WL + cypDM_HN_FR)/6,levels=design))
+topTags(et, n = 5)
+fdr.gen <- p.adjust(et$table$PValue, method="BH")
+et_merge<-cbind(Gene_ID = rownames(et$table), et$table[,setdiff(colnames(et$table),c("logCPM"))], fdr.gen)
+
+# Get A. thaliana best hit and its description for each gene
+# First column of metadata file must contain Gene IDs
+
+et_merge <- getAnnnot(et_merge, md = md)
+et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
+top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
+length(unique(et_merge$Gene_ID[top_DE])) #13,590
+detags <- rownames(y)[top_DE]
+png(file="../results/DE/16-smear_general_nitrogen.png",    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 5*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+plotSmear(et, de.tags=detags)
+title("General nitrogen effect")
+dev.off()
+write_tsv(et_merge[top_DE,], file = "../results/DE/16-general_nitrogen-DE.tab")
+write_tsv(et_merge, file = "../results/DE/16-general_nitrogen-DE_full.tab")
+```
+
+### Merge all into a single spreadsheet
+
+#### Load full gene DE lists
+```{r}
+
+# Get shade effect for each genotype in HN conditions
+gene.data.shade_Col_HN <- read_tsv(file="../results/DE/00-Col-0_HN_FR_vs_HN_WL-DE_full.tab")
+
+gene.data.shade_abcg14_HN <- read_tsv(file="../results/DE/01-abcg14_HN_FR_vs_HN_WL-DE_full.tab")
+gene.data.shade_cypDM_HN <- read_tsv(file="../results/DE/02-cypDM_HN_FR_vs_HN_WL-DE_full.tab")
+
+# Get shade effect for each genotype in LN conditions
+gene.data.shade_Col_LN <- read_tsv(file="../results/DE/03-Col-0_LN_FR_vs_LN_WL-DE_full.tab")
+gene.data.shade_abcg14_LN <- read_tsv(file="../results/DE/04-abcg14_LN_FR_vs_LN_WL-DE_full.tab")
+gene.data.shade_cypDM_LN <- read_tsv(file="../results/DE/05-cypDM_LN_FR_vs_LN_WL-DE_full.tab")
+
+# Get nitrogen effect for each genotype in WL conditions
+gene.data.nitrogen_Col_WL <- read_tsv(file="../results/DE/06-Col-0_LN_WL_vs_HN_WL-DE_full.tab")
+gene.data.nitrogen_abcg14_WL <- read_tsv(file="../results/DE/07-abcg14_LN_WL_vs_HN_WL-DE_full.tab")
+gene.data.nitrogen_cypDM_WL <- read_tsv(file="../results/DE/08-cypDM_LN_WL_vs_HN_WL-DE_full.tab")
+
+# Get nitrogen effect for each genotype in FR conditions
+gene.data.nitrogen_Col_FR <- read_tsv(file="../results/DE/09-Col-0_LN_FR_vs_HN_FR-DE_full.tab")
+gene.data.nitrogen_abcg14_FR <- read_tsv(file="../results/DE/10-abcg14_LN_FR_vs_HN_FR-DE_full.tab")
+gene.data.nitrogen_cypDM_FR <- read_tsv(file="../results/DE/11-cypDM_LN_FR_vs_HN_FR-DE_full.tab")
+
+# Get shade effect for each genotype in low vs high nitrogen conditions
+gene.data.shade_nitrogen_Col <- read_tsv(file="../results/DE/12-Col-0_shade_LN_vs_shade_HN-DE_full.tab")
+gene.data.shade_nitrogen_abcg14 <- read_tsv(file="../results/DE/13-abcg14_shade_LN_vs_shade_HN-DE_full.tab")
+gene.data.shade_nitrogen_cypDM <- read_tsv(file="../results/DE/14-cypDM_shade_LN_vs_shade_HN-DE_full.tab")
+
+# Get general shade (regardless of genotype and nitrogen) 
+# and 
+# general nitrogen effects (regardless of genotype and light)
+gene.data.general_shade <- read_tsv(file="../results/DE/15-general_shade-DE_full.tab")
+gene.data.general_nitrogen <- read_tsv(file="../results/DE/16-general_nitrogen-DE_full.tab")
+
+```
+
+#### Merge all datasets into a single large dataset
+```{r}
+# select subset of columns
+selected.cols <- c(1,10,12,13)
+
+# Merge shade effect in HN by genotype
+full.degs.data <- merge(gene.data.shade_Col_HN[!duplicated(gene.data.shade_Col_HN$Gene_ID),selected.cols], gene.data.shade_abcg14_HN[!duplicated(gene.data.shade_abcg14_HN$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[2:7] <- c("shade_Col_HN.logFC","shade_Col_HN.PValue","shade_Col_HN.fdr.gen",
+                                   "shade_abcg14_HN.logFC","shade_abcg14_HN.PValue","shade_abcg14_HN.fdr.gen")
+full.degs.data <- merge(full.degs.data, gene.data.shade_cypDM_HN[!duplicated(gene.data.shade_cypDM_HN$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[8:10] <- c("shade_cypDM_HN.logFC","shade_cypDM_HN.PValue","shade_cypDM_HN.fdr.gen")
+
+# Merge shade effect in LN by genotype
+full.degs.data <- merge(full.degs.data, gene.data.shade_Col_LN[!duplicated(gene.data.shade_Col_LN$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[11:13] <- c("shade_Col_LN.logFC","shade_Col_LN.PValue","shade_Col_LN.fdr.gen")
+full.degs.data <- merge(full.degs.data, gene.data.shade_abcg14_LN[!duplicated(gene.data.shade_abcg14_LN$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[14:16] <- c("shade_abcg14_LN.logFC","shade_abcg14_LN.PValue","shade_abcg14_LN.fdr.gen")
+full.degs.data <- merge(full.degs.data, gene.data.shade_cypDM_LN[!duplicated(gene.data.shade_cypDM_LN$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[17:19] <- c("shade_cypDM_LN.logFC","shade_cypDM_LN.PValue","shade_cypDM_LN.fdr.gen")
+
+# Merge nitrogen effect in WL by genotype
+full.degs.data <- merge(full.degs.data, gene.data.nitrogen_Col_WL[!duplicated(gene.data.nitrogen_Col_WL$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[20:22] <- c("nitrogen_Col_WL.logFC","nitrogen_Col_WL.PValue","nitrogen_Col_WL.fdr.gen")
+
+full.degs.data <- merge(full.degs.data, gene.data.nitrogen_abcg14_WL[!duplicated(gene.data.nitrogen_abcg14_WL$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[23:25] <- c("nitrogen_abcg14_WL.logFC","nitrogen_abcg14_WL.PValue","nitrogen_abcg14_WL.fdr.gen")
+
+full.degs.data <- merge(full.degs.data, gene.data.nitrogen_cypDM_WL[!duplicated(gene.data.nitrogen_cypDM_WL$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[26:28] <- c("nitrogen_cypDM_WL.logFC","nitrogen_cypDM_WL.PValue","nitrogen_cypDM_WL.fdr.gen")
+
+# Merge nitrogen effect in FR by genotype
+full.degs.data <- merge(full.degs.data, gene.data.nitrogen_Col_FR[!duplicated(gene.data.nitrogen_Col_FR$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[29:31] <- c("nitrogen_Col_FR.logFC","nitrogen_Col_FR.PValue","nitrogen_Col_FR.fdr.gen")
+
+full.degs.data <- merge(full.degs.data, gene.data.nitrogen_abcg14_FR[!duplicated(gene.data.nitrogen_abcg14_FR$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[32:34] <- c("nitrogen_abcg14_FR.logFC","nitrogen_abcg14_FR.PValue","nitrogen_abcg14_FR.fdr.gen")
+
+full.degs.data <- merge(full.degs.data, gene.data.nitrogen_cypDM_FR[!duplicated(gene.data.nitrogen_cypDM_FR$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[35:37] <- c("nitrogen_cypDM_FR.logFC","nitrogen_cypDM_FR.PValue","nitrogen_cypDM_FR.fdr.gen")
+
+# Merge shade-nitrogen effect by genotype
+full.degs.data <- merge(full.degs.data, gene.data.shade_nitrogen_Col[!duplicated(gene.data.shade_nitrogen_Col$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[38:40] <- c("shade_nitrogen_Col.logFC","shade_nitrogen_Col.PValue","shade_nitrogen_Col.fdr.gen")
+
+full.degs.data <- merge(full.degs.data, gene.data.shade_nitrogen_abcg14[!duplicated(gene.data.shade_nitrogen_abcg14$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[41:43] <- c("shade_nitrogen_abcg14.logFC","shade_nitrogen_abcg14.PValue","shade_nitrogen_abcg14.fdr.gen")
+
+full.degs.data <- merge(full.degs.data, gene.data.shade_nitrogen_cypDM[!duplicated(gene.data.shade_nitrogen_cypDM$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[44:46] <- c("shade_nitrogen_cypDM.logFC","shade_nitrogen_cypDM.PValue","shade_nitrogen_cypDM.fdr.gen")
+
+# Merge general shade and general nitrogen responses
+full.degs.data <- merge(full.degs.data, gene.data.general_shade[!duplicated(gene.data.general_shade$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[47:49] <- c("general_shade.logFC","general_shade.PValue","general_shade.fdr.gen")
+
+full.degs.data <- merge(full.degs.data, gene.data.general_nitrogen[!duplicated(gene.data.general_nitrogen$Gene_ID),selected.cols], by = "Gene_ID", all = TRUE)
+colnames(full.degs.data)[50:52] <- c("general_nitrogen.logFC","general_nitrogen.PValue","general_nitrogen.fdr.gen")
+
+# Add annotations
+full.degs.data.annot <- getAnnnot(full.degs.data, md)
+
+# Save data
+write_tsv(full.degs.data, file="../results/DE/shade_N_ck.genes.full.degs.tab")
+write_tsv(full.degs.data.annot, file="../results/DE/shade_N_ck.genes.full.degs.annot.tab")
+
+```
+
+### Set a logFC cut-off and get number of DEGs for each condition
+```{r}
+p.value <- 0.05
+fdr <- 0.05
+logFC <- 1
+
+degs.shade_Col_HN <- gene.data.shade_Col_HN[which(!duplicated(gene.data.shade_Col_HN$Gene_ID) & abs(gene.data.shade_Col_HN$logFC) >= logFC & gene.data.shade_Col_HN$PValue < p.value & gene.data.shade_Col_HN$fdr.gen < fdr), selected.cols] #1,132
+
+degs.shade_abcg14_HN <- gene.data.shade_abcg14_HN[which(!duplicated(gene.data.shade_abcg14_HN$Gene_ID) & abs(gene.data.shade_abcg14_HN$logFC) >= logFC & gene.data.shade_abcg14_HN$PValue < p.value & gene.data.shade_abcg14_HN$fdr.gen < fdr), selected.cols] #1,158
+
+degs.shade_cypDM_HN <- gene.data.shade_cypDM_HN[which(!duplicated(gene.data.shade_cypDM_HN$Gene_ID) & abs(gene.data.shade_cypDM_HN$logFC) >= logFC & gene.data.shade_cypDM_HN$PValue < p.value & gene.data.shade_cypDM_HN$fdr.gen < fdr), selected.cols] #962
+
+degs.shade_Col_LN <- gene.data.shade_Col_LN[which(!duplicated(gene.data.shade_Col_LN$Gene_ID) & abs(gene.data.shade_Col_LN$logFC) >= logFC & gene.data.shade_Col_LN$PValue < p.value & gene.data.shade_Col_LN$fdr.gen < fdr), selected.cols] #931
+
+degs.shade_abcg14_LN <- gene.data.shade_abcg14_LN[which(!duplicated(gene.data.shade_abcg14_LN$Gene_ID) & abs(gene.data.shade_abcg14_LN$logFC) >= logFC & gene.data.shade_abcg14_LN$PValue < p.value & gene.data.shade_abcg14_LN$fdr.gen < fdr), selected.cols] #961
+
+degs.shade_cypDM_LN <- gene.data.shade_cypDM_LN[which(!duplicated(gene.data.shade_cypDM_LN$Gene_ID) & abs(gene.data.shade_cypDM_LN$logFC) >= logFC & gene.data.shade_cypDM_LN$PValue < p.value & gene.data.shade_cypDM_LN$fdr.gen < fdr), selected.cols] #752
+
+degs.nitrogen_Col_WL <- gene.data.nitrogen_Col_WL[which(!duplicated(gene.data.nitrogen_Col_WL$Gene_ID) & abs(gene.data.nitrogen_Col_WL$logFC) >= logFC & gene.data.nitrogen_Col_WL$PValue < p.value & gene.data.nitrogen_Col_WL$fdr.gen < fdr), selected.cols] #817
+
+degs.nitrogen_abcg14_WL <- gene.data.nitrogen_abcg14_WL[which(!duplicated(gene.data.nitrogen_abcg14_WL$Gene_ID) & abs(gene.data.nitrogen_abcg14_WL$logFC) >= logFC & gene.data.nitrogen_abcg14_WL$PValue < p.value & gene.data.nitrogen_abcg14_WL$fdr.gen < fdr), selected.cols] #1,040
+
+degs.nitrogen_cypDM_WL <- gene.data.nitrogen_cypDM_WL[which(!duplicated(gene.data.nitrogen_cypDM_WL$Gene_ID) & abs(gene.data.nitrogen_cypDM_WL$logFC) >= logFC & gene.data.nitrogen_cypDM_WL$PValue < p.value & gene.data.nitrogen_cypDM_WL$fdr.gen < fdr), selected.cols] #265
+
+degs.nitrogen_Col_FR <- gene.data.nitrogen_Col_FR[which(!duplicated(gene.data.nitrogen_Col_FR$Gene_ID) & abs(gene.data.nitrogen_Col_FR$logFC) >= logFC & gene.data.nitrogen_Col_FR$PValue < p.value & gene.data.nitrogen_Col_FR$fdr.gen < fdr), selected.cols] #228
+
+degs.nitrogen_abcg14_FR <- gene.data.nitrogen_abcg14_FR[which(!duplicated(gene.data.nitrogen_abcg14_FR$Gene_ID) & abs(gene.data.nitrogen_abcg14_FR$logFC) >= logFC & gene.data.nitrogen_abcg14_FR$PValue < p.value & gene.data.nitrogen_abcg14_FR$fdr.gen < fdr), selected.cols] #738
+
+degs.nitrogen_cypDM_FR <- gene.data.nitrogen_cypDM_FR[which(!duplicated(gene.data.nitrogen_cypDM_FR$Gene_ID) & abs(gene.data.nitrogen_cypDM_FR$logFC) >= logFC & gene.data.nitrogen_cypDM_FR$PValue < p.value & gene.data.nitrogen_cypDM_FR$fdr.gen < fdr), selected.cols] #268
+
+degs.shade_nitrogen_Col <- gene.data.shade_nitrogen_Col[which(!duplicated(gene.data.shade_nitrogen_Col$Gene_ID) & abs(gene.data.shade_nitrogen_Col$logFC) >= logFC & gene.data.shade_nitrogen_Col$PValue < p.value & gene.data.shade_nitrogen_Col$fdr.gen < fdr), selected.cols] #26
+
+degs.shade_nitrogen_abcg14 <- gene.data.shade_nitrogen_abcg14[which(!duplicated(gene.data.shade_nitrogen_abcg14$Gene_ID) & abs(gene.data.shade_nitrogen_abcg14$logFC) >= logFC & gene.data.shade_nitrogen_abcg14$PValue < p.value & gene.data.shade_nitrogen_abcg14$fdr.gen < fdr), selected.cols] #8
+
+degs.shade_nitrogen_cypDM <- gene.data.shade_nitrogen_cypDM[which(!duplicated(gene.data.shade_nitrogen_cypDM$Gene_ID) & abs(gene.data.shade_nitrogen_cypDM$logFC) >= logFC & gene.data.shade_nitrogen_cypDM$PValue < p.value & gene.data.shade_nitrogen_cypDM$fdr.gen < fdr), selected.cols] #0
+
+degs.general_shade <- gene.data.general_shade[which(!duplicated(gene.data.general_shade$Gene_ID) & abs(gene.data.general_shade$logFC) >= logFC & gene.data.general_shade$PValue < p.value & gene.data.general_shade$fdr.gen < fdr), selected.cols] #1,027
+
+degs.general_nitrogen <- gene.data.general_nitrogen[which(!duplicated(gene.data.general_nitrogen$Gene_ID) & abs(gene.data.general_nitrogen$logFC) >= logFC & gene.data.general_nitrogen$PValue < p.value & gene.data.general_nitrogen$fdr.gen < fdr), selected.cols] #516
+
+```
+
+### Get up/down DEGs for each condition
+
+```{r}
+up.down.degs <- data.frame(sample = colnames(contrasts),
+                           up = c(length(degs.shade_Col_HN$Gene_ID[which(degs.shade_Col_HN$logFC >= logFC)]),
+                                  length(degs.shade_abcg14_HN$Gene_ID[which(degs.shade_abcg14_HN$logFC >= logFC)]),
+                                  length(degs.shade_cypDM_HN$Gene_ID[which(degs.shade_cypDM_HN$logFC >= logFC)]),
+                                  
+                                  length(degs.shade_Col_LN$Gene_ID[which(degs.shade_Col_LN$logFC >= logFC)]),
+                                  length(degs.shade_abcg14_LN$Gene_ID[which(degs.shade_abcg14_LN$logFC >= logFC)]),
+                                  length(degs.shade_cypDM_LN$Gene_ID[which(degs.shade_cypDM_LN$logFC >= logFC)]),
+                                  
+                                  length(degs.nitrogen_Col_WL$Gene_ID[which(degs.nitrogen_Col_WL$logFC >= logFC)]),
+                                  length(degs.nitrogen_abcg14_WL$Gene_ID[which(degs.nitrogen_abcg14_WL$logFC >= logFC)]),
+                                  length(degs.nitrogen_cypDM_WL$Gene_ID[which(degs.nitrogen_cypDM_WL$logFC >= logFC)]),
+                                  
+                                  length(degs.nitrogen_Col_FR$Gene_ID[which(degs.nitrogen_Col_FR$logFC >= logFC)]),
+                                  length(degs.nitrogen_abcg14_FR$Gene_ID[which(degs.nitrogen_abcg14_FR$logFC >= logFC)]),
+                                  length(degs.nitrogen_cypDM_FR$Gene_ID[which(degs.nitrogen_cypDM_FR$logFC >= logFC)]),
+                                  
+                                  length(degs.shade_nitrogen_Col$Gene_ID[which(degs.shade_nitrogen_Col$logFC >= logFC)]),
+                                  length(degs.shade_nitrogen_abcg14$Gene_ID[which(degs.shade_nitrogen_abcg14$logFC >= logFC)]),
+                                  length(degs.shade_nitrogen_cypDM$Gene_ID[which(degs.shade_nitrogen_cypDM$logFC >= logFC)]),
+                                  
+                                  length(degs.general_shade$Gene_ID[which(degs.general_shade$logFC >= logFC)]),
+                                  length(degs.general_nitrogen$Gene_ID[which(degs.general_nitrogen$logFC >= logFC)])
+                           ),
+                           down = c(length(degs.shade_Col_HN$Gene_ID[which(degs.shade_Col_HN$logFC <= logFC)]),
+                                  length(degs.shade_abcg14_HN$Gene_ID[which(degs.shade_abcg14_HN$logFC <= logFC)]),
+                                  length(degs.shade_cypDM_HN$Gene_ID[which(degs.shade_cypDM_HN$logFC <= logFC)]),
+                                  
+                                  length(degs.shade_Col_LN$Gene_ID[which(degs.shade_Col_LN$logFC <= logFC)]),
+                                  length(degs.shade_abcg14_LN$Gene_ID[which(degs.shade_abcg14_LN$logFC <= logFC)]),
+                                  length(degs.shade_cypDM_LN$Gene_ID[which(degs.shade_cypDM_LN$logFC <= logFC)]),
+                                  
+                                  length(degs.nitrogen_Col_WL$Gene_ID[which(degs.nitrogen_Col_WL$logFC <= logFC)]),
+                                  length(degs.nitrogen_abcg14_WL$Gene_ID[which(degs.nitrogen_abcg14_WL$logFC <= logFC)]),
+                                  length(degs.nitrogen_cypDM_WL$Gene_ID[which(degs.nitrogen_cypDM_WL$logFC <= logFC)]),
+                                  
+                                  length(degs.nitrogen_Col_FR$Gene_ID[which(degs.nitrogen_Col_FR$logFC <= logFC)]),
+                                  length(degs.nitrogen_abcg14_FR$Gene_ID[which(degs.nitrogen_abcg14_FR$logFC <= logFC)]),
+                                  length(degs.nitrogen_cypDM_FR$Gene_ID[which(degs.nitrogen_cypDM_FR$logFC <= logFC)]),
+                                  
+                                  length(degs.shade_nitrogen_Col$Gene_ID[which(degs.shade_nitrogen_Col$logFC <= logFC)]),
+                                  length(degs.shade_nitrogen_abcg14$Gene_ID[which(degs.shade_nitrogen_abcg14$logFC <= logFC)]),
+                                  length(degs.shade_nitrogen_cypDM$Gene_ID[which(degs.shade_nitrogen_cypDM$logFC <= logFC)]),
+                                  
+                                  length(degs.general_shade$Gene_ID[which(degs.general_shade$logFC <= logFC)]),
+                                  length(degs.general_nitrogen$Gene_ID[which(degs.general_nitrogen$logFC <= logFC)])
+                           )
+                          
+)
+
+up.down.degs <- data.frame(up.down.degs, total = rowSums(up.down.degs[,2:3]))
+```
+
+#### Plot up/down DEGs for each condition
+```{r}
+# plot up/down genes
+png(file=paste0("../results/DE/up_and_down_DEGs-with_logFC_",logFC,"_and_fdr_",fdr,".png"),    # create PNG for the MDS        
+    width = 5*600,        # 10 x 600 pixels
+    height = 6*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+
+maxy <- 1.10 * max(cbind(up.down.degs$up, up.down.degs$down)) # range of the y-axis
+par(tcl=-0.2, mgp=c(2, 0.5, 0)) # parameters that determin tick size and location of axis labels
+par(mar=c(0, 5, 3, 1), mfrow=c(2,1)) # set the margins around the plot (mar) and define two plots in this graph (mfrow, multiple figures by row))
+bc <- barplot(up.down.degs[,2], col="#ffc000", ylim=c(0, maxy),
+              axes=F)
+axis(side=2); title(ylab="Number of upreg DEGs")
+title(main = "Misregulated genes")
+text(x = bc, y = up.down.degs$up , label = up.down.degs$up, pos = 3, cex = 0.8, col = "#ffc000")
+par(mar=c(3, 5, 0, 1)) # change the margins around the plot to suit the downregulated genes
+bc <- barplot(up.down.degs[,3], col="#2f75b5", ylim=c(maxy, 0), axes=F)
+axis(side=2)
+title(ylab="Number of downreg DEGs")
+text(x = bc, y = up.down.degs$down , label = up.down.degs$down, pos = 1, cex = 0.8, col = "#2f75b5")
+text(x = bc, y = 690, label = up.down.degs$sample, adj = 0, cex = 0.8, col = "black", srt=90)
+dev.off()
+```
+
+### Comparison of gene sets
+```{r}
+if ((!require(UpSetR))) install.packages("UpSetR")
+if ((!require(ggpubr))) install.packages("ggpubr")
+
+# generate up degs lists
+up.deg.sets <- list(shade_Col_HN_up = degs.shade_Col_HN$Gene_ID[which(degs.shade_Col_HN$logFC >= logFC)],
+                    shade_abcg14_HN_up = degs.shade_abcg14_HN$Gene_ID[which(degs.shade_abcg14_HN$logFC >= logFC)],
+                    shade_cypDM_HN_up = degs.shade_cypDM_HN$Gene_ID[which(degs.shade_cypDM_HN$logFC >= logFC)],
+                    
+                    shade_Col_LN_up = degs.shade_Col_LN$Gene_ID[which(degs.shade_Col_LN$logFC >= logFC)],
+                    shade_abcg14_LN_up = degs.shade_abcg14_LN$Gene_ID[which(degs.shade_abcg14_LN$logFC >= logFC)],
+                    shade_cypDM_LN_up = degs.shade_cypDM_LN$Gene_ID[which(degs.shade_cypDM_LN$logFC >= logFC)],
+                    
+                    nitrogen_Col_WL_up = degs.nitrogen_Col_WL$Gene_ID[which(degs.nitrogen_Col_WL$logFC >= logFC)],
+                    nitrogen_abcg14_WL_up = degs.nitrogen_abcg14_WL$Gene_ID[which(degs.nitrogen_abcg14_WL$logFC >= logFC)],
+                    nitrogen_cypDM_WL_up = degs.nitrogen_cypDM_WL$Gene_ID[which(degs.nitrogen_cypDM_WL$logFC >= logFC)],
+                    
+                    nitrogen_Col_FR_up = degs.nitrogen_Col_FR$Gene_ID[which(degs.nitrogen_Col_FR$logFC >= logFC)],
+                    nitrogen_abcg14_FR_up = degs.nitrogen_abcg14_FR$Gene_ID[which(degs.nitrogen_abcg14_FR$logFC >= logFC)],
+                    nitrogen_cypDM_FR_up = degs.nitrogen_cypDM_FR$Gene_ID[which(degs.nitrogen_cypDM_FR$logFC >= logFC)],
+                    
+                    shade_nitrogen_Col_up = degs.shade_nitrogen_Col$Gene_ID[which(degs.shade_nitrogen_Col$logFC >= logFC)],
+                    shade_nitrogen_abcg14_up = degs.shade_nitrogen_abcg14$Gene_ID[which(degs.shade_nitrogen_abcg14$logFC >= logFC)],
+                    shade_nitrogen_cypDM_up = degs.shade_nitrogen_cypDM$Gene_ID[which(degs.shade_nitrogen_cypDM$logFC >= logFC)],
+                    
+                    general_shade_up = degs.general_shade$Gene_ID[which(degs.general_shade$logFC >= logFC)],
+                    general_nitrogen_up = degs.general_nitrogen$Gene_ID[which(degs.general_nitrogen$logFC >= logFC)]
+)
+                          
+upset(fromList(up.deg.sets), sets.bar.color = "#56B4E9",
+      order.by = "freq",  set_size.show = TRUE, set_size.scale_max = 1000, empty.intersections = TRUE)
+
+# plot up genes
+png(file=paste0("../results/DE/up_Upset_shade_all_genotypes_",logFC,"_and_fdr_",fdr,".png"),    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 6*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+
+upset(fromList(up.deg.sets),
+      sets.bar.color = "#56B4E9",
+      sets = c("shade_Col_HN_up", "shade_Col_LN_up", "shade_cypDM_HN_up", "shade_cypDM_LN_up", "shade_abcg14_HN_up", "shade_abcg14_LN_up"), 
+      # order.by = "freq",
+      keep.order = TRUE,
+      set_size.show = TRUE,
+      set_size.scale_max = 1000,
+      empty.intersections = TRUE)
+
+dev.off()
+
+# generate down degs lists
+down.deg.sets <- list(shade_Col_HN_down = degs.shade_Col_HN$Gene_ID[which(degs.shade_Col_HN$logFC <= logFC)],
+                    shade_abcg14_HN_down = degs.shade_abcg14_HN$Gene_ID[which(degs.shade_abcg14_HN$logFC <= logFC)],
+                    shade_cypDM_HN_down = degs.shade_cypDM_HN$Gene_ID[which(degs.shade_cypDM_HN$logFC <= logFC)],
+                    
+                    shade_Col_LN_down = degs.shade_Col_LN$Gene_ID[which(degs.shade_Col_LN$logFC <= logFC)],
+                    shade_abcg14_LN_down = degs.shade_abcg14_LN$Gene_ID[which(degs.shade_abcg14_LN$logFC <= logFC)],
+                    shade_cypDM_LN_down = degs.shade_cypDM_LN$Gene_ID[which(degs.shade_cypDM_LN$logFC <= logFC)],
+                    
+                    nitrogen_Col_WL_down = degs.nitrogen_Col_WL$Gene_ID[which(degs.nitrogen_Col_WL$logFC <= logFC)],
+                    nitrogen_abcg14_WL_down = degs.nitrogen_abcg14_WL$Gene_ID[which(degs.nitrogen_abcg14_WL$logFC <= logFC)],
+                    nitrogen_cypDM_WL_down = degs.nitrogen_cypDM_WL$Gene_ID[which(degs.nitrogen_cypDM_WL$logFC <= logFC)],
+                    
+                    nitrogen_Col_FR_down = degs.nitrogen_Col_FR$Gene_ID[which(degs.nitrogen_Col_FR$logFC <= logFC)],
+                    nitrogen_abcg14_FR_down = degs.nitrogen_abcg14_FR$Gene_ID[which(degs.nitrogen_abcg14_FR$logFC <= logFC)],
+                    nitrogen_cypDM_FR_down = degs.nitrogen_cypDM_FR$Gene_ID[which(degs.nitrogen_cypDM_FR$logFC <= logFC)],
+                    
+                    shade_nitrogen_Col_down = degs.shade_nitrogen_Col$Gene_ID[which(degs.shade_nitrogen_Col$logFC <= logFC)],
+                    shade_nitrogen_abcg14_down = degs.shade_nitrogen_abcg14$Gene_ID[which(degs.shade_nitrogen_abcg14$logFC <= logFC)],
+                    shade_nitrogen_cypDM_down = degs.shade_nitrogen_cypDM$Gene_ID[which(degs.shade_nitrogen_cypDM$logFC <= logFC)],
+                    
+                    general_shade_down = degs.general_shade$Gene_ID[which(degs.general_shade$logFC <= logFC)],
+                    general_nitrogen_down = degs.general_nitrogen$Gene_ID[which(degs.general_nitrogen$logFC <= logFC)]
+)
+                          
+upset(fromList(down.deg.sets), sets.bar.color = "#56B4E9",
+      order.by = "freq",  set_size.show = TRUE, set_size.scale_max = 1000, empty.intersections = TRUE)
+
+# plot down genes
+png(file=paste0("../results/DE/down_Upset_shade_all_genotypes_",logFC,"_and_fdr_",fdr,".png"),    # create PNG for the MDS        
+    width = 10*600,        # 10 x 600 pixels
+    height = 6*600,
+    res = 600,            # 300 pixels per inch
+    pointsize = 8)        # smaller font size))
+
+upset(fromList(down.deg.sets),
+      sets.bar.color = "#56B4E9",
+      sets = c("shade_Col_HN_down", "shade_Col_LN_down", "shade_cypDM_HN_down", "shade_cypDM_LN_down", "shade_abcg14_HN_down", "shade_abcg14_LN_down"), 
+      # order.by = "freq",
+      keep.order = TRUE,
+      set_size.show = TRUE,
+      set_size.scale_max = 1000,
+      empty.intersections = TRUE)
+
+dev.off()
+
+
+```
+
