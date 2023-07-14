@@ -30,5 +30,10 @@ results/correlation/*
 results/DE/*
 results/gene_plots/*
 results/heatmaps/*
-
 .Rproj.user
+!data/Araport11_functional_descriptions_20210930.txt
+!data/gene_aliases_20210930.txt
+!data/TFs-AGRIS_AtTFDB_2022-12-06-families_data.txt
+!data/TFs-PlantTFDBv5.0_2022-12-06-Ath_TF_list.txt
+!data/data/TFs-Ensembl_v55_2022-10_GO0003700_mart_export.txt
+!data/full_metadata_20221205.tab
