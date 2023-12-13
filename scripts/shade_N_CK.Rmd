@@ -708,6 +708,10 @@ pca.res.df <- as_tibble(pca.res$x)
 
 sampleLabels <- rownames(y.filtered.norm$samples)
 
+write_tsv(pca.res.df, file="../results/PCA_loadings.txt") # Save loadings data
+save(group, file = "../results/group.RData") # Save grouping data 
+save(sampleLabels, file = "../results/sampleLabels.RData")  # Save sample labels data
+
 pca.plot <- ggplot(pca.res.df) +
   aes(x=PC1, y=PC2, label=c(rep("",length(sampleLabels))), color = group) +
   geom_point(size = 4) +
@@ -2010,5 +2014,10 @@ upset(fromList(down.deg.sets),
 dev.off()
 
 
+```
+
+## Save Session Info
+```{r}
+writeLines(capture.output(sessionInfo()), "sessionInfo.txt")
 ```
 
