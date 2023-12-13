@@ -1075,10 +1075,6 @@ title("CKX5 - AT1G75450")
 
 dev.off()
 
-
-barplot(norm_counts["AT5G64800", ], las = 2,ylab = "Normalised counts (CPM)")
-title("CLE21 - AT5G64800")
-
 ```
 
 ### Hierarchical clustering with heatmaps
@@ -1214,7 +1210,6 @@ write_delim(norm_counts.annot, file="../results/annot.shade_n_ck.genes.CPM.norma
 ```
 
 ## 07 - Sample comparisons
-*Remember to uncomment metadata merge
 
 ```{r}
 dir.create("../results/DE")
