@@ -1238,7 +1238,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #4,525
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/00-smear_Col-0_HN_FR_vs_HN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1265,7 +1265,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #4,713
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/01-smear_abcg14_HN_FR_vs_HN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1292,7 +1292,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #4,421
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/02-smear_cypDM_HN_FR_vs_HN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1319,7 +1319,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #3,747
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/03-smear_Col_LN_FR_vs_LN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1346,7 +1346,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #4,038
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/04-smear_abcg14_LN_FR_vs_LN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1373,7 +1373,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #3,747
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/05-smear_cypDM_LN_FR_vs_LN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1400,7 +1400,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #7,232
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/06-smear_Col_LN_WL_vs_HN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1426,7 +1426,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #6,746
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/07-smear_abcg14_LN_WL_vs_HN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1453,7 +1453,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #2,203
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/08-smear_cypDM_LN_WL_vs_HN_WL.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1480,7 +1480,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #2,855
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/09-smear_Col_LN_FR_vs_HN_FR.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1507,7 +1507,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #6,466
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/10-smear_abcg14_LN_FR_vs_HN_FR.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1534,7 +1534,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #3,976
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/11-smear_cypDM_LN_FR_vs_HN_FR.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1561,7 +1561,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #80
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/12-smear_Col_shade_LN_vs_shade_HN.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1588,7 +1588,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #25
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/13-smear_abcg14_shade_LN_vs_shade_HN.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1615,7 +1615,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #0
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/14-smear_cypDM_shade_LN_vs_shade_HN.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1642,7 +1642,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #10,970
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/15-smear_general_shade.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
@@ -1669,7 +1669,7 @@ et_merge <- getAnnnot(et_merge, md = md)
 et_merge <- et_merge[order(et_merge$logFC, et_merge$PValue),] # Order by logFC and p value
 top_DE<-which(et_merge$PValue < p.value & et_merge$fdr.gen < fdr) # filter by p.value and fdr
 length(unique(et_merge$Gene_ID[top_DE])) #13,590
-detags <- rownames(y)[top_DE]
+detags <- et_merge$Gene_ID[top_DE]
 png(file="../results/DE/16-smear_general_nitrogen.png",    # create PNG for the MDS        
     width = 5*600,        # 10 x 600 pixels
     height = 5*600,
